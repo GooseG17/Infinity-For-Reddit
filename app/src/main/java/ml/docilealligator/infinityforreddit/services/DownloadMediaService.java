@@ -10,6 +10,7 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.media.MediaScannerConnection;
+import android.media.MediaMetadataEditor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -58,6 +59,9 @@ public class DownloadMediaService extends Service {
     public static final String EXTRA_SUBREDDIT_NAME = "ESN";
     public static final String EXTRA_MEDIA_TYPE = "EIG";
     public static final String EXTRA_IS_NSFW = "EIN";
+    public static final String EXTRA_POST_TITLE = "EPT";
+    public static final String EXTRA_AUTHOR = "EA";
+    public static final String EXTRA_DATE = "ED";
     public static final int EXTRA_MEDIA_TYPE_IMAGE = 0;
     public static final int EXTRA_MEDIA_TYPE_GIF = 1;
     public static final int EXTRA_MEDIA_TYPE_VIDEO = 2;
@@ -77,6 +81,10 @@ public class DownloadMediaService extends Service {
     private NotificationManagerCompat notificationManager;
     private NotificationCompat.Builder builder;
     private ServiceHandler serviceHandler;
+    private String mPostTitle;
+    private String mAuthor;
+    private String mDatePosted;
+    private String fileUrl;
 
     public DownloadMediaService() {
     }
@@ -93,53 +101,51 @@ public class DownloadMediaService extends Service {
         public ServiceHandler(Looper looper) {
             super(looper);
         }
+
         @Override
         public void handleMessage(Message msg) {
             int randomNotificationIdOffset = msg.arg1;
             Bundle intent = msg.getData();
             downloadFinished = false;
-            String fileUrl = intent.getString(EXTRA_URL);
+            fileUrl = intent.getString(EXTRA_URL);
             String fileName = intent.getString(EXTRA_FILE_NAME);
             String subredditName = intent.getString(EXTRA_SUBREDDIT_NAME);
             int mediaType = intent.getInt(EXTRA_MEDIA_TYPE, EXTRA_MEDIA_TYPE_IMAGE);
             boolean isNsfw = intent.getBoolean(EXTRA_IS_NSFW, false);
+            mPostTitle = intent.getString(EXTRA_POST_TITLE);
+            mAuthor = intent.getString(EXTRA_AUTHOR);
+            mDatePosted = intent.getString(EXTRA_DATE);
             String mimeType = mediaType == EXTRA_MEDIA_TYPE_VIDEO ? "video/*" : "image/*";
 
             final DownloadProgressResponseBody.ProgressListener progressListener = new DownloadProgressResponseBody.ProgressListener() {
                 long time = 0;
 
-                @Override public void update(long bytesRead, long contentLength, boolean done) {
+                @Override
+                public void update(long bytesRead, long contentLength, boolean done) {
                     if (!done) {
                         if (contentLength != -1) {
                             long currentTime = System.currentTimeMillis();
                             if (currentTime - time > 1000) {
                                 time = currentTime;
-                                updateNotification(mediaType, 0,
-                                        (int) ((100 * bytesRead) / contentLength), randomNotificationIdOffset, null, null);
+                                updateNotification(mediaType, 0, (int) ((100 * bytesRead) / contentLength),
+                                        randomNotificationIdOffset, null, null);
                             }
                         }
                     }
                 }
             };
 
-            OkHttpClient client = new OkHttpClient.Builder()
-                    .addNetworkInterceptor(chain -> {
-                        okhttp3.Response originalResponse = chain.proceed(chain.request());
-                        return originalResponse.newBuilder()
-                                .body(new DownloadProgressResponseBody(originalResponse.body(), progressListener))
-                                .build();
-                    })
-                    .addInterceptor(chain -> chain.proceed(
-                            chain.request()
-                                    .newBuilder()
-                                    .header("User-Agent", APIUtils.USER_AGENT)
-                                    .build()
-                    ))
-                    .build();
+            OkHttpClient client = new OkHttpClient.Builder().addNetworkInterceptor(chain -> {
+                okhttp3.Response originalResponse = chain.proceed(chain.request());
+                return originalResponse.newBuilder()
+                        .body(new DownloadProgressResponseBody(originalResponse.body(), progressListener)).build();
+            }).addInterceptor(chain -> chain
+                    .proceed(chain.request().newBuilder().header("User-Agent", APIUtils.USER_AGENT).build())).build();
 
             retrofit = retrofit.newBuilder().client(client).build();
 
-            boolean separateDownloadFolder = mSharedPreferences.getBoolean(SharedPreferencesUtils.SEPARATE_FOLDER_FOR_EACH_SUBREDDIT, false);
+            boolean separateDownloadFolder = mSharedPreferences
+                    .getBoolean(SharedPreferencesUtils.SEPARATE_FOLDER_FOR_EACH_SUBREDDIT, false);
 
             Response<ResponseBody> response = null;
             String destinationFileUriString = null;
@@ -153,22 +159,28 @@ public class DownloadMediaService extends Service {
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                             File directory = getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
                             if (directory != null) {
-                                String directoryPath = separateDownloadFolder && subredditName != null && !subredditName.equals("") ? directory.getAbsolutePath() + "/Infinity/" + subredditName + "/" : directory.getAbsolutePath() + "/Infinity/";
+                                String directoryPath = separateDownloadFolder && subredditName != null
+                                        && !subredditName.equals("")
+                                                ? directory.getAbsolutePath() + "/Infinity/" + subredditName + "/"
+                                                : directory.getAbsolutePath() + "/Infinity/";
                                 File infinityDir = new File(directoryPath);
                                 if (!infinityDir.exists() && !infinityDir.mkdirs()) {
-                                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType,
-                                            null, ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
+                                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
+                                            ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
                                     return;
                                 }
                                 destinationFileUriString = directoryPath + fileName;
                             } else {
-                                downloadFinished(mediaType, randomNotificationIdOffset, mimeType,
-                                        null, ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
+                                downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
+                                        ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
                                 return;
                             }
                         } else {
-                            String dir = mediaType == EXTRA_MEDIA_TYPE_VIDEO ? Environment.DIRECTORY_MOVIES : Environment.DIRECTORY_PICTURES;
-                            destinationFileUriString = separateDownloadFolder && subredditName != null && !subredditName.equals("") ? dir + "/Infinity/" + subredditName + "/" : dir + "/Infinity/";
+                            String dir = mediaType == EXTRA_MEDIA_TYPE_VIDEO ? Environment.DIRECTORY_MOVIES
+                                    : Environment.DIRECTORY_PICTURES;
+                            destinationFileUriString = separateDownloadFolder && subredditName != null
+                                    && !subredditName.equals("") ? dir + "/Infinity/" + subredditName + "/"
+                                            : dir + "/Infinity/";
                         }
                         isDefaultDestination = true;
                     } else {
@@ -176,26 +188,30 @@ public class DownloadMediaService extends Service {
                         DocumentFile picFile;
                         DocumentFile dir;
                         if (separateDownloadFolder && subredditName != null && !subredditName.equals("")) {
-                            dir = DocumentFile.fromTreeUri(DownloadMediaService.this, Uri.parse(destinationFileDirectory));
+                            dir = DocumentFile.fromTreeUri(DownloadMediaService.this,
+                                    Uri.parse(destinationFileDirectory));
                             if (dir == null) {
-                                downloadFinished(mediaType, randomNotificationIdOffset, mimeType,
-                                        null, ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
+                                downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
+                                        ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
                                 return;
                             }
                             dir = dir.findFile(subredditName);
                             if (dir == null) {
-                                dir = DocumentFile.fromTreeUri(DownloadMediaService.this, Uri.parse(destinationFileDirectory)).createDirectory(subredditName);
+                                dir = DocumentFile
+                                        .fromTreeUri(DownloadMediaService.this, Uri.parse(destinationFileDirectory))
+                                        .createDirectory(subredditName);
                                 if (dir == null) {
-                                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType,
-                                            null, ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
+                                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
+                                            ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
                                     return;
                                 }
                             }
                         } else {
-                            dir = DocumentFile.fromTreeUri(DownloadMediaService.this, Uri.parse(destinationFileDirectory));
+                            dir = DocumentFile.fromTreeUri(DownloadMediaService.this,
+                                    Uri.parse(destinationFileDirectory));
                             if (dir == null) {
-                                downloadFinished(mediaType, randomNotificationIdOffset, mimeType,
-                                        null, ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
+                                downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
+                                        ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
                                 return;
                             }
                         }
@@ -210,15 +226,14 @@ public class DownloadMediaService extends Service {
                         }
                         picFile = dir.createFile(mimeType, fileName);
                         if (picFile == null) {
-                            downloadFinished(mediaType, randomNotificationIdOffset, mimeType,
-                                    null, ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
+                            downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
+                                    ERROR_CANNOT_GET_DESTINATION_DIRECTORY);
                             return;
                         }
                         destinationFileUriString = picFile.getUri().toString();
                     }
                 } else {
-                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null,
-                            ERROR_FILE_CANNOT_DOWNLOAD);
+                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null, ERROR_FILE_CANNOT_DOWNLOAD);
                 }
             } catch (IOException e) {
                 e.printStackTrace();
@@ -226,21 +241,18 @@ public class DownloadMediaService extends Service {
 
             try {
                 if (response != null && response.body() != null) {
-                    Uri destinationFileUri = writeResponseBodyToDisk(response.body(), isDefaultDestination, destinationFileUriString,
-                            fileName, mediaType);
-                    downloadFinished(mediaType, randomNotificationIdOffset,
-                            mimeType, destinationFileUri, NO_ERROR);
+                    Uri destinationFileUri = writeResponseBodyToDisk(response.body(), isDefaultDestination,
+                            destinationFileUriString, fileName, mediaType);
+                    downloadFinished(mediaType, randomNotificationIdOffset, mimeType, destinationFileUri, NO_ERROR);
                 }
             } catch (IOException e) {
                 e.printStackTrace();
-                downloadFinished(mediaType, randomNotificationIdOffset,
-                        mimeType, null, ERROR_FILE_CANNOT_SAVE);
+                downloadFinished(mediaType, randomNotificationIdOffset, mimeType, null, ERROR_FILE_CANNOT_SAVE);
             }
         }
 
         private Uri writeResponseBodyToDisk(ResponseBody body, boolean isDefaultDestination,
-                                             String destinationFileUriString, String destinationFileName,
-                                             int mediaType) throws IOException {
+                String destinationFileUriString, String destinationFileName, int mediaType) throws IOException {
             ContentResolver contentResolver = getContentResolver();
             if (isDefaultDestination) {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -269,20 +281,22 @@ public class DownloadMediaService extends Service {
                     contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, destinationFileName);
                     String mimeType;
                     switch (mediaType) {
-                        case EXTRA_MEDIA_TYPE_VIDEO:
-                            mimeType = "video/mpeg";
-                            break;
-                        case EXTRA_MEDIA_TYPE_GIF:
-                            mimeType = "image/gif";
-                            break;
-                        default:
-                            mimeType = "image/jpeg";
+                    case EXTRA_MEDIA_TYPE_VIDEO:
+                        mimeType = "video/mpeg";
+                        break;
+                    case EXTRA_MEDIA_TYPE_GIF:
+                        mimeType = "image/gif";
+                        break;
+                    default:
+                        mimeType = "image/jpeg";
                     }
                     contentValues.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
                     contentValues.put(MediaStore.MediaColumns.RELATIVE_PATH, destinationFileUriString);
                     contentValues.put(MediaStore.MediaColumns.IS_PENDING, 1);
 
-                    final Uri contentUri = mediaType == EXTRA_MEDIA_TYPE_VIDEO ? MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) : MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    final Uri contentUri = mediaType == EXTRA_MEDIA_TYPE_VIDEO
+                            ? MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                            : MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
                     Uri uri = contentResolver.insert(contentUri, contentValues);
 
                     if (uri == null) {
@@ -324,7 +338,9 @@ public class DownloadMediaService extends Service {
             return Uri.parse(destinationFileUriString);
         }
 
-        private void downloadFinished(int mediaType, int randomNotificationIdOffset, String mimeType, Uri destinationFileUri, int errorCode) {
+        private void downloadFinished(int mediaType, int randomNotificationIdOffset, String mimeType,
+                Uri destinationFileUri, int errorCode) {
+            
             if (downloadFinished) {
                 return;
             }
@@ -332,27 +348,27 @@ public class DownloadMediaService extends Service {
             downloadFinished = true;
             if (errorCode != NO_ERROR) {
                 switch (errorCode) {
-                    case ERROR_CANNOT_GET_DESTINATION_DIRECTORY:
-                        updateNotification(mediaType, R.string.downloading_image_or_gif_failed_cannot_get_destination_directory,
-                                -1, randomNotificationIdOffset, null, null);
-                        break;
-                    case ERROR_FILE_CANNOT_DOWNLOAD:
-                        updateNotification(mediaType, R.string.downloading_media_failed_cannot_download_media,
-                                -1, randomNotificationIdOffset, null, null);
-                        break;
-                    case ERROR_FILE_CANNOT_SAVE:
-                        updateNotification(mediaType, R.string.downloading_media_failed_cannot_save_to_destination_directory,
-                                -1, randomNotificationIdOffset, null, null);
-                        break;
+                case ERROR_CANNOT_GET_DESTINATION_DIRECTORY:
+                    updateNotification(mediaType,
+                            R.string.downloading_image_or_gif_failed_cannot_get_destination_directory, -1,
+                            randomNotificationIdOffset, null, null);
+                    break;
+                case ERROR_FILE_CANNOT_DOWNLOAD:
+                    updateNotification(mediaType, R.string.downloading_media_failed_cannot_download_media, -1,
+                            randomNotificationIdOffset, null, null);
+                    break;
+                case ERROR_FILE_CANNOT_SAVE:
+                    updateNotification(mediaType,
+                            R.string.downloading_media_failed_cannot_save_to_destination_directory, -1,
+                            randomNotificationIdOffset, null, null);
+                    break;
                 }
             } else {
-                MediaScannerConnection.scanFile(
-                        DownloadMediaService.this, new String[]{destinationFileUri.toString()}, null,
-                        (path, uri) -> {
+                MediaScannerConnection.scanFile(DownloadMediaService.this,
+                        new String[] { destinationFileUri.toString() }, null, (path, uri) -> {
                             updateNotification(mediaType, R.string.downloading_media_finished, -1,
                                     randomNotificationIdOffset, destinationFileUri, mimeType);
-                        }
-                );
+                        });
             }
             stopForeground(false);
         }
@@ -366,8 +382,7 @@ public class DownloadMediaService extends Service {
         // separate thread because the service normally runs in the process's
         // main thread, which we don't want to block. We also make it
         // background priority so CPU-intensive work doesn't disrupt our UI.
-        HandlerThread thread = new HandlerThread("ServiceStartArguments",
-                Process.THREAD_PRIORITY_BACKGROUND);
+        HandlerThread thread = new HandlerThread("ServiceStartArguments", Process.THREAD_PRIORITY_BACKGROUND);
         thread.start();
 
         // Get the HandlerThread's Looper and use it for our Handler
@@ -379,33 +394,24 @@ public class DownloadMediaService extends Service {
         int mediaType = intent.getIntExtra(EXTRA_MEDIA_TYPE, EXTRA_MEDIA_TYPE_IMAGE);
         builder = new NotificationCompat.Builder(this, getNotificationChannelId(mediaType));
 
-        NotificationChannelCompat serviceChannel =
-                new NotificationChannelCompat.Builder(
-                        getNotificationChannelId(mediaType),
-                        NotificationManagerCompat.IMPORTANCE_LOW)
-                        .setName(getNotificationChannel(mediaType))
-                        .build();
+        NotificationChannelCompat serviceChannel = new NotificationChannelCompat.Builder(
+                getNotificationChannelId(mediaType), NotificationManagerCompat.IMPORTANCE_LOW)
+                        .setName(getNotificationChannel(mediaType)).build();
         notificationManager.createNotificationChannel(serviceChannel);
 
         int randomNotificationIdOffset = new Random().nextInt(10000);
         switch (intent.getIntExtra(EXTRA_MEDIA_TYPE, EXTRA_MEDIA_TYPE_IMAGE)) {
-            case EXTRA_MEDIA_TYPE_GIF:
-                startForeground(
-                        NotificationUtils.DOWNLOAD_GIF_NOTIFICATION_ID + randomNotificationIdOffset,
-                        createNotification(intent.getStringExtra(EXTRA_FILE_NAME))
-                );
-                break;
-            case EXTRA_MEDIA_TYPE_VIDEO:
-                startForeground(
-                        NotificationUtils.DOWNLOAD_VIDEO_NOTIFICATION_ID + randomNotificationIdOffset,
-                        createNotification(intent.getStringExtra(EXTRA_FILE_NAME))
-                );
-                break;
-            default:
-                startForeground(
-                        NotificationUtils.DOWNLOAD_IMAGE_NOTIFICATION_ID + randomNotificationIdOffset,
-                        createNotification(intent.getStringExtra(EXTRA_FILE_NAME))
-                );
+        case EXTRA_MEDIA_TYPE_GIF:
+            startForeground(NotificationUtils.DOWNLOAD_GIF_NOTIFICATION_ID + randomNotificationIdOffset,
+                    createNotification(intent.getStringExtra(EXTRA_FILE_NAME)));
+            break;
+        case EXTRA_MEDIA_TYPE_VIDEO:
+            startForeground(NotificationUtils.DOWNLOAD_VIDEO_NOTIFICATION_ID + randomNotificationIdOffset,
+                    createNotification(intent.getStringExtra(EXTRA_FILE_NAME)));
+            break;
+        default:
+            startForeground(NotificationUtils.DOWNLOAD_IMAGE_NOTIFICATION_ID + randomNotificationIdOffset,
+                    createNotification(intent.getStringExtra(EXTRA_FILE_NAME)));
         }
 
         Message msg = serviceHandler.obtainMessage();
@@ -420,12 +426,11 @@ public class DownloadMediaService extends Service {
     private Notification createNotification(String fileName) {
         builder.setContentTitle(fileName).setContentText(getString(R.string.downloading)).setProgress(100, 0, false);
         return builder.setSmallIcon(R.drawable.ic_notification)
-                .setColor(mCustomThemeWrapper.getColorPrimaryLightTheme())
-                .build();
+                .setColor(mCustomThemeWrapper.getColorPrimaryLightTheme()).build();
     }
 
     private void updateNotification(int mediaType, int contentStringResId, int progress, int randomNotificationIdOffset,
-                                    Uri mediaUri, String mimeType) {
+            Uri mediaUri, String mimeType) {
         if (notificationManager != null) {
             if (progress < 0) {
                 builder.setProgress(0, 0, false);
@@ -436,13 +441,16 @@ public class DownloadMediaService extends Service {
                 builder.setContentText(getString(contentStringResId));
             }
             if (mediaUri != null) {
-                int pendingIntentFlags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE : PendingIntent.FLAG_CANCEL_CURRENT;
+                int pendingIntentFlags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                        ? PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                        : PendingIntent.FLAG_CANCEL_CURRENT;
 
                 Intent intent = new Intent();
                 intent.setAction(android.content.Intent.ACTION_VIEW);
                 intent.setDataAndType(mediaUri, mimeType);
                 intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                PendingIntent pendingIntent = PendingIntent.getActivity(DownloadMediaService.this, 0, intent, pendingIntentFlags);
+                PendingIntent pendingIntent = PendingIntent.getActivity(DownloadMediaService.this, 0, intent,
+                        pendingIntentFlags);
                 builder.setContentIntent(pendingIntent);
 
                 Intent shareIntent = new Intent();
@@ -451,15 +459,20 @@ public class DownloadMediaService extends Service {
                 shareIntent.setType(mimeType);
                 shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 Intent intentAction = Intent.createChooser(shareIntent, getString(R.string.share));
-                PendingIntent shareActionPendingIntent = PendingIntent.getActivity(this, 1, intentAction, pendingIntentFlags);
+                PendingIntent shareActionPendingIntent = PendingIntent.getActivity(this, 1, intentAction,
+                        pendingIntentFlags);
 
-                builder.addAction(new NotificationCompat.Action(R.drawable.ic_notification, getString(R.string.share), shareActionPendingIntent));
+                builder.addAction(new NotificationCompat.Action(R.drawable.ic_notification, getString(R.string.share),
+                        shareActionPendingIntent));
 
                 Intent deleteIntent = new Intent(this, DownloadedMediaDeleteActionBroadcastReceiver.class);
                 deleteIntent.setData(mediaUri);
-                deleteIntent.putExtra(DownloadedMediaDeleteActionBroadcastReceiver.EXTRA_NOTIFICATION_ID, getNotificationId(mediaType, randomNotificationIdOffset));
-                PendingIntent deleteActionPendingIntent = PendingIntent.getBroadcast(this, 2, deleteIntent, pendingIntentFlags);
-                builder.addAction(new NotificationCompat.Action(R.drawable.ic_notification, getString(R.string.delete), deleteActionPendingIntent));
+                deleteIntent.putExtra(DownloadedMediaDeleteActionBroadcastReceiver.EXTRA_NOTIFICATION_ID,
+                        getNotificationId(mediaType, randomNotificationIdOffset));
+                PendingIntent deleteActionPendingIntent = PendingIntent.getBroadcast(this, 2, deleteIntent,
+                        pendingIntentFlags);
+                builder.addAction(new NotificationCompat.Action(R.drawable.ic_notification, getString(R.string.delete),
+                        deleteActionPendingIntent));
             }
             notificationManager.notify(getNotificationId(mediaType, randomNotificationIdOffset), builder.build());
         }
@@ -467,48 +480,49 @@ public class DownloadMediaService extends Service {
 
     private String getNotificationChannelId(int mediaType) {
         switch (mediaType) {
-            case EXTRA_MEDIA_TYPE_GIF:
-                return NotificationUtils.CHANNEL_ID_DOWNLOAD_GIF;
-            case EXTRA_MEDIA_TYPE_VIDEO:
-                return NotificationUtils.CHANNEL_ID_DOWNLOAD_VIDEO;
-            default:
-                return NotificationUtils.CHANNEL_ID_DOWNLOAD_IMAGE;
+        case EXTRA_MEDIA_TYPE_GIF:
+            return NotificationUtils.CHANNEL_ID_DOWNLOAD_GIF;
+        case EXTRA_MEDIA_TYPE_VIDEO:
+            return NotificationUtils.CHANNEL_ID_DOWNLOAD_VIDEO;
+        default:
+            return NotificationUtils.CHANNEL_ID_DOWNLOAD_IMAGE;
         }
     }
 
     private String getNotificationChannel(int mediaType) {
         switch (mediaType) {
-            case EXTRA_MEDIA_TYPE_GIF:
-                return NotificationUtils.CHANNEL_DOWNLOAD_GIF;
-            case EXTRA_MEDIA_TYPE_VIDEO:
-                return NotificationUtils.CHANNEL_DOWNLOAD_VIDEO;
-            default:
-                return NotificationUtils.CHANNEL_DOWNLOAD_IMAGE;
+        case EXTRA_MEDIA_TYPE_GIF:
+            return NotificationUtils.CHANNEL_DOWNLOAD_GIF;
+        case EXTRA_MEDIA_TYPE_VIDEO:
+            return NotificationUtils.CHANNEL_DOWNLOAD_VIDEO;
+        default:
+            return NotificationUtils.CHANNEL_DOWNLOAD_IMAGE;
         }
     }
 
     private int getNotificationId(int mediaType, int randomNotificationIdOffset) {
         switch (mediaType) {
-            case EXTRA_MEDIA_TYPE_GIF:
-                return NotificationUtils.DOWNLOAD_GIF_NOTIFICATION_ID + randomNotificationIdOffset;
-            case EXTRA_MEDIA_TYPE_VIDEO:
-                return NotificationUtils.DOWNLOAD_VIDEO_NOTIFICATION_ID + randomNotificationIdOffset;
-            default:
-                return NotificationUtils.DOWNLOAD_IMAGE_NOTIFICATION_ID + randomNotificationIdOffset;
+        case EXTRA_MEDIA_TYPE_GIF:
+            return NotificationUtils.DOWNLOAD_GIF_NOTIFICATION_ID + randomNotificationIdOffset;
+        case EXTRA_MEDIA_TYPE_VIDEO:
+            return NotificationUtils.DOWNLOAD_VIDEO_NOTIFICATION_ID + randomNotificationIdOffset;
+        default:
+            return NotificationUtils.DOWNLOAD_IMAGE_NOTIFICATION_ID + randomNotificationIdOffset;
         }
     }
 
     private String getDownloadLocation(int mediaType, boolean isNsfw) {
-        if (isNsfw && mSharedPreferences.getBoolean(SharedPreferencesUtils.SAVE_NSFW_MEDIA_IN_DIFFERENT_FOLDER, false)) {
+        if (isNsfw
+                && mSharedPreferences.getBoolean(SharedPreferencesUtils.SAVE_NSFW_MEDIA_IN_DIFFERENT_FOLDER, false)) {
             return mSharedPreferences.getString(SharedPreferencesUtils.NSFW_DOWNLOAD_LOCATION, "");
         }
         switch (mediaType) {
-            case EXTRA_MEDIA_TYPE_GIF:
-                return mSharedPreferences.getString(SharedPreferencesUtils.GIF_DOWNLOAD_LOCATION, "");
-            case EXTRA_MEDIA_TYPE_VIDEO:
-                return mSharedPreferences.getString(SharedPreferencesUtils.VIDEO_DOWNLOAD_LOCATION, "");
-            default:
-                return mSharedPreferences.getString(SharedPreferencesUtils.IMAGE_DOWNLOAD_LOCATION, "");
+        case EXTRA_MEDIA_TYPE_GIF:
+            return mSharedPreferences.getString(SharedPreferencesUtils.GIF_DOWNLOAD_LOCATION, "");
+        case EXTRA_MEDIA_TYPE_VIDEO:
+            return mSharedPreferences.getString(SharedPreferencesUtils.VIDEO_DOWNLOAD_LOCATION, "");
+        default:
+            return mSharedPreferences.getString(SharedPreferencesUtils.IMAGE_DOWNLOAD_LOCATION, "");
         }
     }
 }
